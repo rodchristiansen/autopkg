@@ -1,16 +1,31 @@
 #!/usr/local/autopkg/python
 
-import imp
+import importlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import plistlib
+import sys
 import unittest
 from textwrap import dedent
 from unittest.mock import mock_open, patch
 
 import autopkglib
 
-autopkg = imp.load_source(
+
+def _load_source(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = sys.modules.get(name)
+    if mod is None:
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+autopkg = _load_source(
     "autopkg", os.path.join(os.path.dirname(__file__), "..", "autopkg")
 )
 
@@ -129,7 +144,7 @@ class TestAutoPkg(unittest.TestCase):
 
     def setUp(self):
         # This forces autopkglib to accept our patching of memoize
-        imp.reload(autopkglib)
+        importlib.reload(autopkglib)
         autopkglib.globalPreferences
 
     def tearDown(self):
