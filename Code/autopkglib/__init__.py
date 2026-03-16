@@ -28,7 +28,6 @@ import subprocess
 import sys
 import traceback
 from copy import deepcopy
-from distutils.version import LooseVersion
 from typing import IO, Any, Union
 
 import appdirs
@@ -418,7 +417,7 @@ def get_autopkg_version() -> str:
 def version_equal_or_greater(this, that) -> bool:
     """Compares two LooseVersion objects. Returns True if this is
     equal to or greater than that"""
-    return LooseVersion(this) >= LooseVersion(that)
+    return APLooseVersion(this) >= APLooseVersion(that)
 
 
 def update_data(a_dict, key, value) -> None:
@@ -950,8 +949,32 @@ def _cmp(x, y) -> int:
     return (x > y) - (x < y)
 
 
-class APLooseVersion(LooseVersion):
-    """Subclass of distutils.version.LooseVersion to fix issues under Python 3"""
+class APLooseVersion:
+    """Standalone loose version comparison, replacing distutils.version.LooseVersion
+    which was removed in Python 3.12."""
+
+    component_re = re.compile(r"(\d+|[a-z]+|\.)", re.VERBOSE)
+
+    def __init__(self, vstring=None):
+        if vstring:
+            self.parse(str(vstring))
+
+    def parse(self, vstring):
+        self.vstring = vstring
+        components = self.component_re.findall(vstring)
+        self.version = []
+        for item in components:
+            if item and item != ".":
+                try:
+                    self.version.append(int(item))
+                except ValueError:
+                    self.version.append(item)
+
+    def __str__(self):
+        return self.vstring
+
+    def __repr__(self):
+        return "APLooseVersion ('%s')" % str(self)
 
     def _pad(self, version_list, max_length) -> list:
         """Pad a version list by adding extra 0 components to the end if needed."""
@@ -963,7 +986,7 @@ class APLooseVersion(LooseVersion):
 
     def _compare(self, other) -> int:
         """Complete comparison mechanism since LooseVersion's is broken in Python 3."""
-        if not isinstance(other, (LooseVersion, APLooseVersion)):
+        if not isinstance(other, APLooseVersion):
             other = APLooseVersion(other)
         max_length = max(len(self.version), len(other.version))
         self_cmp_version = self._pad(self.version, max_length)
