@@ -18,7 +18,6 @@
 import os.path
 import re
 import subprocess
-from distutils.version import StrictVersion
 from glob import glob
 
 from autopkglib import ProcessorError
@@ -27,6 +26,11 @@ from autopkglib.DmgMounter import DmgMounter
 __all__ = ["CodeSignatureVerifier"]
 
 RE_AUTHORITY_PKGUTIL = re.compile(r"\s+[1-9]+\. (?P<authority>.*)\n")
+
+
+def _version_tuple(v):
+    """Convert a dotted version string to a tuple of ints for comparison."""
+    return tuple(int(x) for x in v.split("."))
 
 
 class CodeSignatureVerifier(DmgMounter):
@@ -117,7 +121,7 @@ class CodeSignatureVerifier(DmgMounter):
 
         # Use --deep option in OS X 10.9.5 or later
         darwin_version = os.uname()[2]
-        if StrictVersion(darwin_version) >= StrictVersion("13.4.0"):
+        if _version_tuple(darwin_version) >= _version_tuple("13.4.0"):
             if deep_verification:
                 self.output("Deep verification enabled...")
                 process.append("--deep")
@@ -125,7 +129,7 @@ class CodeSignatureVerifier(DmgMounter):
                 self.output("Deep verification disabled...")
 
         # Use --strict option in OS X 10.11 or later and only if requested by the recipe
-        if StrictVersion(darwin_version) >= StrictVersion("15.0"):
+        if _version_tuple(darwin_version) >= _version_tuple("15.0"):
             if strict_verification is None:
                 self.output(
                     "Strict verification not defined. Using codesign defaults..."
@@ -337,7 +341,7 @@ class CodeSignatureVerifier(DmgMounter):
             if file_extension in [".pkg", ".mpkg", ".xip"]:
                 # Check the kernel version to make sure we're running on
                 # 10.7 or later (10.6.8 == Darwin Kernel Version 10.8.0)
-                if StrictVersion(darwin_version) >= StrictVersion("11.0"):
+                if _version_tuple(darwin_version) >= _version_tuple("11.0"):
                     self.process_installer_package(matched_input_path)
                 else:
                     self.output(
