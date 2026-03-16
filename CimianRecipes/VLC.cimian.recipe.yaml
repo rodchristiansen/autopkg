@@ -1,0 +1,54 @@
+Description: Downloads the latest VLC installer and imports it into a Cimian repo.
+Identifier: com.github.autopkg.cimian.VLC
+MinimumVersion: "3.0.0"
+Input:
+  NAME: VLC
+  ARCHITECTURE: x64
+
+Process:
+  - Processor: GitHubReleasesInfoProvider
+    Arguments:
+      github_repo: videolan/vlc
+      asset_regex: "vlc-[\\d.]+-win64\\.exe$"
+      include_prereleases: false
+
+  - Processor: URLDownloader
+    Arguments:
+      filename: "%NAME%-%version%.exe"
+
+  - Processor: EndOfCheckPhase
+
+  - Processor: CimianInfoCreator
+    Arguments:
+      pkg_path: "%pathname%"
+      installer_type: exe
+      cimian_info_name: "%NAME%"
+      cimian_info_category: Video
+      cimian_info_developer: VideoLAN
+      cimian_info_description: >
+        VLC is a free and open source cross-platform multimedia player and framework
+        that plays most multimedia files as well as DVDs, Audio CDs, VCDs, and
+        various streaming protocols.
+
+  - Processor: CimianImporter
+    Arguments:
+      pkg_path: "%pathname%"
+      installer_type: exe
+      cimian_subdirectory: apps/video
+      installer_switches:
+        - /S
+        - /NCRC
+        - "D=C:\\Program Files\\VideoLAN\\VLC"
+      supported_architectures:
+        - "%ARCHITECTURE%"
+      catalogs:
+        - Development
+      unattended_install: true
+      unattended_uninstall: true
+      postinstall_script: |
+        # Remove desktop shortcuts
+        $shortcutPattern = 'C:\Users\Public\Desktop\VLC*.lnk'
+        $matchingShortcuts = Get-ChildItem -Path $shortcutPattern -ErrorAction SilentlyContinue
+        foreach ($shortcut in $matchingShortcuts) {
+          Remove-Item $shortcut.FullName -Force -ErrorAction SilentlyContinue
+        }
