@@ -1,0 +1,37 @@
+Description: Downloads the latest Firefox MSI and imports it into a Cimian repo.
+Identifier: com.github.autopkg.cimian.Firefox
+MinimumVersion: "3.0.0"
+Input:
+  NAME: Firefox
+  DOWNLOAD_URL: https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=en-US
+  ARCHITECTURE: x64
+
+Process:
+  - Processor: URLDownloader
+    Arguments:
+      url: "%DOWNLOAD_URL%"
+      filename: "%NAME%-%ARCHITECTURE%.msi"
+
+  - Processor: EndOfCheckPhase
+
+  - Processor: CimianInfoCreator
+    Arguments:
+      pkg_path: "%pathname%"
+      installer_type: msi
+      cimian_info_name: "%NAME%"
+      cimian_info_category: Browsers
+      cimian_info_developer: Mozilla
+
+  - Processor: CimianImporter
+    Arguments:
+      pkg_path: "%pathname%"
+      installer_type: msi
+      cimian_subdirectory: apps/browsers
+      supported_architectures:
+        - "%ARCHITECTURE%"
+      catalogs:
+        - Development
+      blocking_applications:
+        - Firefox
+      unattended_install: true
+      unattended_uninstall: true

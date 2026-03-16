@@ -1,0 +1,37 @@
+Description: Downloads the latest Google Chrome MSI and imports it into a Cimian repo.
+Identifier: com.github.autopkg.cimian.Chrome
+MinimumVersion: "3.0.0"
+Input:
+  NAME: Chrome
+  DOWNLOAD_URL: https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi
+  ARCHITECTURE: x64
+
+Process:
+  - Processor: URLDownloader
+    Arguments:
+      url: "%DOWNLOAD_URL%"
+      filename: "%NAME%-%ARCHITECTURE%.msi"
+
+  - Processor: EndOfCheckPhase
+
+  - Processor: CimianInfoCreator
+    Arguments:
+      pkg_path: "%pathname%"
+      installer_type: msi
+      cimian_info_name: "%NAME%"
+      cimian_info_category: Browsers
+      cimian_info_developer: Google LLC
+
+  - Processor: CimianImporter
+    Arguments:
+      pkg_path: "%pathname%"
+      installer_type: msi
+      cimian_subdirectory: apps/browsers
+      supported_architectures:
+        - "%ARCHITECTURE%"
+      catalogs:
+        - Development
+      blocking_applications:
+        - Chrome
+      unattended_install: true
+      unattended_uninstall: false
