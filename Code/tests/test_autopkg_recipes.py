@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import imp
+import importlib.machinery
+import importlib.util
 import os
 import plistlib
 import sys
@@ -25,7 +26,19 @@ from unittest.mock import Mock, patch
 # Add the Code directory to the Python path to resolve autopkg dependencies
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-autopkg = imp.load_source(
+
+def _load_source(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = sys.modules.get(name)
+    if mod is None:
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+autopkg = _load_source(
     "autopkg", os.path.join(os.path.dirname(__file__), "..", "autopkg")
 )
 
