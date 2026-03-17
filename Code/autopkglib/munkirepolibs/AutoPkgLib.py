@@ -16,30 +16,62 @@ class AutoPkgLib:
         self.munki_repo = munki_repo
         self.repo_subdirectory = repo_subdirectory
 
+    def _scan_pkgsinfo_files(self):
+        """Walk the pkgsinfo directory and load every plist/YAML pkginfo
+        file.  Returns a list of pkginfo dicts (same shape as a catalog)."""
+        pkgsinfo_dir = os.path.join(self.munki_repo, "pkgsinfo")
+        if not os.path.isdir(pkgsinfo_dir):
+            return []
+
+        items = []
+        for dirpath, _dirnames, filenames in os.walk(pkgsinfo_dir):
+            for fname in filenames:
+                if fname.startswith("."):
+                    continue
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    info = load_munki_file(fpath)
+                except Exception:
+                    continue
+                if isinstance(info, dict) and "name" in info:
+                    items.append(info)
+        return items
+
     def make_catalog_db(self) -> dict:
         """Reads the 'all' catalog and returns a dict we can use like a
-        database.  Supports both plist and YAML catalog formats."""
+        database.  Supports both plist and YAML catalog formats.
+
+        Falls back to scanning individual pkgsinfo files when the
+        compiled catalog is missing or empty, which ensures duplicate
+        detection works even before makecatalogs has been run."""
 
         # Check for YAML catalog first, then fall back to traditional path
-        all_yaml_path = os.path.join(self.munki_repo, "catalogs", "all.yaml")
-        all_items_path = os.path.join(self.munki_repo, "catalogs", "all")
+        catalogs_dir = os.path.join(self.munki_repo, "catalogs")
+        candidates = [
+            os.path.join(catalogs_dir, "all.yaml"),
+            os.path.join(catalogs_dir, "all.yml"),
+            os.path.join(catalogs_dir, "all"),
+        ]
 
         catalog_path = None
-        if os.path.exists(all_yaml_path):
-            catalog_path = all_yaml_path
-        elif os.path.exists(all_items_path):
-            catalog_path = all_items_path
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                catalog_path = candidate
+                break
 
-        if catalog_path is None:
-            # might be an error, or might be a brand-new empty repo
-            catalogitems = []
-        else:
+        catalogitems = []
+        if catalog_path is not None:
             try:
                 catalogitems = load_munki_file(catalog_path)
             except Exception as err:
                 raise ProcessorError(
                     f"Error reading 'all' catalog from Munki repo: {err}"
                 )
+
+        if not catalogitems:
+            # Catalog is missing or empty — scan pkgsinfo files directly
+            # so duplicate detection works before makecatalogs is run.
+            catalogitems = self._scan_pkgsinfo_files()
 
         pkgid_table = {}
         app_table = {}

@@ -528,5 +528,140 @@ class TestMunkiImporter(unittest.TestCase):
         self.assertIn("data", summary)
 
 
+class TestAutoPkgLibCatalogDb(unittest.TestCase):
+    """Tests for AutoPkgLib.make_catalog_db duplicate detection,
+    including YAML pkgsinfo fallback scanning."""
+
+    def setUp(self):
+        self.tmp_dir = TemporaryDirectory()
+        self.munki_repo = os.path.join(self.tmp_dir.name, "munki_repo")
+        os.makedirs(os.path.join(self.munki_repo, "pkgs"))
+        os.makedirs(os.path.join(self.munki_repo, "pkgsinfo"))
+        os.makedirs(os.path.join(self.munki_repo, "catalogs"))
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _write_plist_pkginfo(self, subdir, filename, pkginfo):
+        dest = os.path.join(self.munki_repo, "pkgsinfo", subdir)
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, filename), "wb") as f:
+            plistlib.dump(pkginfo, f)
+
+    def _write_yaml_pkginfo(self, subdir, filename, pkginfo):
+        from autopkglib.autopkgyaml import dump_pkginfo_yaml
+
+        dest = os.path.join(self.munki_repo, "pkgsinfo", subdir)
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, filename), "w", encoding="utf-8") as f:
+            dump_pkginfo_yaml(pkginfo, f)
+
+    def _make_pkginfo(self, name="TestApp", version="1.0.0", hash_value="abc123"):
+        return {
+            "name": name,
+            "version": version,
+            "catalogs": ["testing"],
+            "installer_item_hash": hash_value,
+            "installer_item_location": f"apps/{name}-{version}.pkg",
+            "installer_item_size": 1024,
+        }
+
+    def test_empty_catalog_falls_back_to_plist_pkgsinfo(self):
+        """When catalogs/all is an empty list, pkgsinfo plist files are scanned."""
+        from autopkglib.munkirepolibs.AutoPkgLib import AutoPkgLib
+
+        with open(os.path.join(self.munki_repo, "catalogs", "all"), "wb") as f:
+            plistlib.dump([], f)
+
+        info = self._make_pkginfo()
+        self._write_plist_pkginfo("apps", "TestApp-1.0.0.plist", info)
+
+        lib = AutoPkgLib(self.munki_repo, "apps")
+        db = lib.make_catalog_db()
+
+        self.assertIn("abc123", db["hashes"])
+
+    def test_empty_catalog_falls_back_to_yaml_pkgsinfo(self):
+        """When catalogs/all is an empty list, pkgsinfo YAML files are scanned."""
+        from autopkglib.munkirepolibs.AutoPkgLib import AutoPkgLib
+
+        with open(os.path.join(self.munki_repo, "catalogs", "all"), "wb") as f:
+            plistlib.dump([], f)
+
+        info = self._make_pkginfo(name="VLC", version="3.0.20", hash_value="yaml999")
+        self._write_yaml_pkginfo("apps", "VLC-3.0.20.yaml", info)
+
+        lib = AutoPkgLib(self.munki_repo, "apps")
+        db = lib.make_catalog_db()
+
+        self.assertIn("yaml999", db["hashes"])
+
+    def test_missing_catalog_falls_back_to_pkgsinfo(self):
+        """When no catalogs/all file exists at all, pkgsinfo files are scanned."""
+        from autopkglib.munkirepolibs.AutoPkgLib import AutoPkgLib
+
+        # Remove the catalogs/all file entirely
+        all_path = os.path.join(self.munki_repo, "catalogs", "all")
+        if os.path.exists(all_path):
+            os.remove(all_path)
+
+        info = self._make_pkginfo(name="Chrome", hash_value="noCat1")
+        self._write_yaml_pkginfo("apps", "Chrome-1.0.0.yaml", info)
+
+        lib = AutoPkgLib(self.munki_repo, "apps")
+        db = lib.make_catalog_db()
+
+        self.assertIn("noCat1", db["hashes"])
+
+    def test_yaml_catalog_is_read(self):
+        """catalogs/all.yaml is read when present."""
+        from autopkglib.autopkgyaml import dump_pkginfo_yaml
+        from autopkglib.munkirepolibs.AutoPkgLib import AutoPkgLib
+
+        items = [self._make_pkginfo(name="Audacity", hash_value="yamlCat1")]
+        with open(
+            os.path.join(self.munki_repo, "catalogs", "all.yaml"), "w", encoding="utf-8"
+        ) as f:
+            import yaml
+
+            yaml.dump(items, f)
+
+        lib = AutoPkgLib(self.munki_repo, "apps")
+        db = lib.make_catalog_db()
+
+        self.assertIn("yamlCat1", db["hashes"])
+
+    def test_populated_catalog_does_not_scan_pkgsinfo(self):
+        """When catalogs/all has items, pkgsinfo directory is NOT scanned."""
+        from autopkglib.munkirepolibs.AutoPkgLib import AutoPkgLib
+
+        catalog_item = self._make_pkginfo(name="InCatalog", hash_value="catHash")
+        with open(os.path.join(self.munki_repo, "catalogs", "all"), "wb") as f:
+            plistlib.dump([catalog_item], f)
+
+        # This pkgsinfo file should NOT appear since catalog has data
+        extra = self._make_pkginfo(name="OnlyOnDisk", hash_value="diskHash")
+        self._write_yaml_pkginfo("apps", "OnlyOnDisk-1.0.0.yaml", extra)
+
+        lib = AutoPkgLib(self.munki_repo, "apps")
+        db = lib.make_catalog_db()
+
+        self.assertIn("catHash", db["hashes"])
+        self.assertNotIn("diskHash", db["hashes"])
+
+    def test_hidden_files_are_skipped_in_pkgsinfo_scan(self):
+        """Dotfiles in pkgsinfo are skipped during fallback scan."""
+        from autopkglib.munkirepolibs.AutoPkgLib import AutoPkgLib
+
+        # No catalog
+        info = self._make_pkginfo(name="Hidden", hash_value="hidden1")
+        self._write_yaml_pkginfo("apps", ".DS_Store", info)
+
+        lib = AutoPkgLib(self.munki_repo, "apps")
+        db = lib.make_catalog_db()
+
+        self.assertNotIn("hidden1", db["hashes"])
+
+
 if __name__ == "__main__":
     unittest.main()
