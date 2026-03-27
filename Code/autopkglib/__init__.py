@@ -872,6 +872,8 @@ class AutoPackager:
         if self.verbose > 2:
             pprint.pprint(self.env)
 
+        version_precheck_done = False
+
         for step in recipe["Process"]:
             if self.verbose:
                 print(step["Processor"])
@@ -891,6 +893,8 @@ class AutoPackager:
             if self.verbose > 1:
                 # pretty print any defined input variables
                 pprint.pprint({"Input": input_dict})
+
+            version_before = self.env.get("version")
 
             try:
                 self.env = processor.process()
@@ -934,6 +938,43 @@ class AutoPackager:
             if self.env.get("stop_processing_recipe"):
                 # processing should stop now
                 break
+
+            # Auto version pre-check: when a processor introduces a new
+            # version value and MUNKI_REPO is available, check if that
+            # version already exists in the repo before downloading.
+            # This skips URLDownloader and MunkiImporter entirely for
+            # recipes that use version info providers (Sparkle, GitHub).
+            version_after = self.env.get("version")
+            if (
+                not version_precheck_done
+                and version_after
+                and version_after != version_before
+                and self.env.get("MUNKI_REPO")
+                and not self.env.get("stop_processing_recipe")
+            ):
+                version_precheck_done = True
+                try:
+                    from autopkglib.MunkiVersionChecker import MunkiVersionChecker
+
+                    checker = MunkiVersionChecker(self.env)
+                    self.env = checker.process()
+                    if self.env.get("stop_processing_recipe"):
+                        self.results.append(
+                            {
+                                "Processor": "MunkiVersionChecker (auto)",
+                                "Input": {
+                                    "version": version_after,
+                                    "NAME": self.env.get("NAME", ""),
+                                },
+                                "Output": {
+                                    "stop_processing_recipe": True,
+                                    "version_check_matched": True,
+                                },
+                            }
+                        )
+                        break
+                except Exception:
+                    pass  # version check errors must not stop recipe processing
 
         if self.verbose > 2:
             pprint.pprint(self.env)
