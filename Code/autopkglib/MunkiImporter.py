@@ -291,6 +291,26 @@ class MunkiImporter(Processor):
                             if matching_pkg["version"] == pkginfo["version"]:
                                 return [matching_pkg]
 
+        # Fall back to matching by name + version.
+        # This catches duplicates when the installer binary differs
+        # (different hash) but the same version is already in the repo,
+        # e.g. when pkgs are stored remotely and re-downloaded each run.
+        name = pkginfo.get("name")
+        version = pkginfo.get("version")
+        if name and version:
+            matchingindexes = (
+                pkgdb.get("name_versions", {}).get(name, {}).get(version)
+            )
+            if matchingindexes:
+                self.output(
+                    f"No hash/installs/receipts match, but found existing "
+                    f"pkginfo for {name} version {version} by name+version."
+                )
+                return [
+                    pkgdb["items"][matchingindex]
+                    for matchingindex in list(matchingindexes)
+                ]
+
         # if we get here, we found no matches
         return None
 
