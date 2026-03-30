@@ -79,6 +79,7 @@ class AutoPkgLib:
         hash_table = {}
         checksum_table = {}
         files_table = {}
+        name_version_table = {}
 
         itemindex = -1
         for item in catalogitems:
@@ -89,6 +90,13 @@ class AutoPkgLib:
             if name == "NO NAME" or vers == "NO VERSION":
                 # skip this item
                 continue
+
+            # add to name+version table
+            if name not in name_version_table:
+                name_version_table[name] = {}
+            if vers not in name_version_table[name]:
+                name_version_table[name][vers] = []
+            name_version_table[name][vers].append(itemindex)
 
             # add to hash table
             if "installer_item_hash" in item:
@@ -166,6 +174,7 @@ class AutoPkgLib:
         pkgdb["installer_items"] = installer_item_table
         pkgdb["checksums"] = checksum_table
         pkgdb["files"] = files_table
+        pkgdb["name_versions"] = name_version_table
         pkgdb["items"] = catalogitems
 
         return pkgdb
