@@ -16,6 +16,8 @@
 import os
 import platform
 import subprocess
+import xml.etree.ElementTree as ET
+import zipfile
 
 from autopkglib import Processor, ProcessorError
 
@@ -31,6 +33,12 @@ class CimianInfoCreator(Processor):
 
     For MSI files on Windows, it extracts ProductCode, UpgradeCode, ProductName,
     and ProductVersion via PowerShell. For EXE files, it reads FileVersionInfo.
+    For MSIX/APPX files, it parses AppxManifest.xml (or AppxBundleManifest.xml
+    for bundles) from the ZIP container to extract Identity.Name, Version,
+    ProcessorArchitecture, Properties.DisplayName, PublisherDisplayName, and
+    Description. MSIX extraction also auto-generates the installs and uninstaller
+    blocks with identity_name that managedsoftwareupdate uses for detection
+    (Get-AppxPackage) and uninstall (Remove-AppxProvisionedPackage).
     """
 
     description = __doc__
@@ -38,11 +46,11 @@ class CimianInfoCreator(Processor):
     input_variables = {
         "pkg_path": {
             "required": True,
-            "description": "Path to an installer file (MSI, EXE, or NUPKG).",
+            "description": "Path to an installer file (MSI, EXE, NUPKG, or MSIX).",
         },
         "installer_type": {
             "required": True,
-            "description": "Type of installer: msi, exe, or nupkg.",
+            "description": "Type of installer: msi, exe, nupkg, or msix.",
         },
         "cimian_info_name": {
             "required": False,
@@ -162,6 +170,80 @@ class CimianInfoCreator(Processor):
         except Exception:
             return {}
 
+    def _extract_msix_properties(self, msix_path):
+        """Extract metadata from an MSIX/APPX/MSIXBUNDLE/APPXBUNDLE package.
+
+        These are ZIP archives containing an AppxManifest.xml (single-arch)
+        or AppxMetadata/AppxBundleManifest.xml (bundle). We parse Identity
+        and Properties elements to extract name, version, architecture,
+        display name, publisher, and description.
+        """
+        props = {}
+        try:
+            with zipfile.ZipFile(msix_path, "r") as zf:
+                names = zf.namelist()
+
+                # Bundles: check for bundle manifest first
+                bundle_manifest = None
+                for n in names:
+                    if n.lower() == "appxmetadata/appxbundlemanifest.xml":
+                        bundle_manifest = n
+                        break
+
+                if bundle_manifest:
+                    with zf.open(bundle_manifest) as f:
+                        tree = ET.parse(f)
+                    root = tree.getroot()
+                    ns = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+                    identity = root.find(f"{ns}Identity")
+                    if identity is not None:
+                        props["IdentityName"] = identity.get("Name", "")
+                        props["Version"] = identity.get("Version", "")
+                        props["Architecture"] = identity.get(
+                            "ProcessorArchitecture", ""
+                        )
+                    return props
+
+                # Single-arch: AppxManifest.xml at root
+                app_manifest = None
+                for n in names:
+                    if n.lower() == "appxmanifest.xml":
+                        app_manifest = n
+                        break
+
+                if not app_manifest:
+                    return props
+
+                with zf.open(app_manifest) as f:
+                    tree = ET.parse(f)
+                root = tree.getroot()
+                ns = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+
+                identity = root.find(f"{ns}Identity")
+                if identity is not None:
+                    props["IdentityName"] = identity.get("Name", "")
+                    props["Version"] = identity.get("Version", "")
+                    props["Architecture"] = identity.get(
+                        "ProcessorArchitecture", ""
+                    )
+
+                properties = root.find(f"{ns}Properties")
+                if properties is not None:
+                    display_name_el = properties.find(f"{ns}DisplayName")
+                    if display_name_el is not None and display_name_el.text:
+                        props["DisplayName"] = display_name_el.text
+                    pub_el = properties.find(f"{ns}PublisherDisplayName")
+                    if pub_el is not None and pub_el.text:
+                        props["PublisherDisplayName"] = pub_el.text
+                    desc_el = properties.find(f"{ns}Description")
+                    if desc_el is not None and desc_el.text:
+                        props["Description"] = desc_el.text
+
+        except Exception as err:
+            self.output(f"MSIX extraction failed: {err}", verbose_level=1)
+
+        return props
+
     def main(self) -> None:
         pkg_path = self.env["pkg_path"]
         if not os.path.isfile(pkg_path):
@@ -178,6 +260,8 @@ class CimianInfoCreator(Processor):
             extracted_props = self._extract_msi_properties(pkg_path)
         elif installer_type == "exe":
             extracted_props = self._extract_exe_version(pkg_path)
+        elif installer_type in ("msix", "appx"):
+            extracted_props = self._extract_msix_properties(pkg_path)
 
         # Name
         name = self.env.get("cimian_info_name")
@@ -186,6 +270,10 @@ class CimianInfoCreator(Processor):
                 name = extracted_props["ProductName"]
             elif installer_type == "exe" and extracted_props.get("ProductName"):
                 name = extracted_props["ProductName"]
+            elif installer_type in ("msix", "appx") and extracted_props.get(
+                "DisplayName"
+            ):
+                name = extracted_props["DisplayName"]
             else:
                 basename = os.path.basename(pkg_path)
                 name, _ = os.path.splitext(basename)
@@ -203,6 +291,8 @@ class CimianInfoCreator(Processor):
                 version = extracted_props["ProductVersion"]
             elif installer_type == "exe" and extracted_props.get("FileVersion"):
                 version = extracted_props["FileVersion"]
+            elif installer_type in ("msix", "appx") and extracted_props.get("Version"):
+                version = extracted_props["Version"]
             else:
                 version = self.env.get("version", "0.0.0")
         pkgsinfo["version"] = str(version)
@@ -210,19 +300,24 @@ class CimianInfoCreator(Processor):
         # Developer
         developer = self.env.get("cimian_info_developer")
         if not developer:
-            developer = extracted_props.get(
-                "Manufacturer", extracted_props.get("CompanyName", "")
-            )
+            if installer_type in ("msix", "appx"):
+                developer = extracted_props.get("PublisherDisplayName", "")
+            else:
+                developer = extracted_props.get(
+                    "Manufacturer", extracted_props.get("CompanyName", "")
+                )
         if developer:
             pkgsinfo["developer"] = developer
 
         # Category and description
-        if self.env.get("cimian_info_category"):
-            pkgsinfo["category"] = self.env["cimian_info_category"]
         if self.env.get("cimian_info_description"):
             pkgsinfo["description"] = self.env["cimian_info_description"]
+        elif installer_type in ("msix", "appx") and extracted_props.get("Description"):
+            pkgsinfo["description"] = extracted_props["Description"]
+        if self.env.get("cimian_info_category"):
+            pkgsinfo["category"] = self.env["cimian_info_category"]
 
-        # MSI-specific installs array
+        # Installer-type-specific installs array
         if installer_type == "msi":
             installs_item = {"type": "msi"}
             if extracted_props.get("ProductCode"):
@@ -231,6 +326,20 @@ class CimianInfoCreator(Processor):
                 installs_item["upgrade_code"] = extracted_props["UpgradeCode"]
             if len(installs_item) > 1:
                 pkgsinfo["installs"] = [installs_item]
+
+        elif installer_type in ("msix", "appx"):
+            identity_name = extracted_props.get("IdentityName", "")
+            if identity_name:
+                pkgsinfo["installs"] = [
+                    {
+                        "type": "msix",
+                        "identity_name": identity_name,
+                        "version": pkgsinfo["version"],
+                    }
+                ]
+                pkgsinfo["uninstaller"] = [
+                    {"type": "msix", "identity_name": identity_name}
+                ]
 
         # Set outputs
         self.env["cimian_pkginfo"] = pkgsinfo
