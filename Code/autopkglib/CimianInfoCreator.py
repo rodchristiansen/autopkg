@@ -113,10 +113,12 @@ class CimianInfoCreator(Processor):
 
             db = msilib.OpenDatabase(msi_path, msilib.MSIDBOPEN_READONLY)
             view = db.OpenView(
-                "SELECT Property, Value FROM Property "
-                "WHERE Property IN "
-                "('ProductCode','UpgradeCode','ProductName',"
-                "'ProductVersion','Manufacturer')"
+                "SELECT `Property`, `Value` FROM `Property` "
+                "WHERE `Property` = 'ProductCode' "
+                "OR `Property` = 'UpgradeCode' "
+                "OR `Property` = 'ProductName' "
+                "OR `Property` = 'ProductVersion' "
+                "OR `Property` = 'Manufacturer'"
             )
             view.Execute(None)
             props = {}
@@ -147,8 +149,11 @@ class CimianInfoCreator(Processor):
             "$installer = New-Object -ComObject WindowsInstaller.Installer;"
             "$db = $installer.OpenDatabase($msiPath, 0);"
             "$view = $db.OpenView(\"SELECT Property, Value FROM Property "
-            "WHERE Property IN ('ProductCode','UpgradeCode','ProductName',"
-            "'ProductVersion','Manufacturer')\");"
+            "WHERE Property = 'ProductCode' "
+            "OR Property = 'UpgradeCode' "
+            "OR Property = 'ProductName' "
+            "OR Property = 'ProductVersion' "
+            "OR Property = 'Manufacturer'\");"
             "$view.Execute();"
             "$row = $view.Fetch();"
             "while ($row -ne $null) {{"
