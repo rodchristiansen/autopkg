@@ -236,8 +236,9 @@ class CimianImporter(Processor):
         },
     }
 
-    def _find_existing_pkgsinfo(self, pkgsinfo_dir, name, version):
-        """Scan pkgsinfo directory for an existing entry matching name and version."""
+    def _find_existing_pkgsinfo(self, pkgsinfo_dir, name, version, architectures=None):
+        """Scan pkgsinfo directory for an existing entry matching name, version,
+        and (optionally) supported_architectures."""
         if not os.path.isdir(pkgsinfo_dir):
             return None
         for root, _dirs, files in os.walk(pkgsinfo_dir):
@@ -248,12 +249,22 @@ class CimianImporter(Processor):
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = yaml.safe_load(f)
-                    if (
-                        isinstance(data, dict)
-                        and data.get("name") == name
-                        and str(data.get("version")) == str(version)
-                    ):
-                        return filepath
+                    if not isinstance(data, dict):
+                        continue
+                    if data.get("name") != name:
+                        continue
+                    if str(data.get("version")) != str(version):
+                        continue
+                    # Architecture-aware matching: if the incoming item
+                    # specifies architectures, only match existing pkgsinfo
+                    # with the same set of architectures.
+                    if architectures:
+                        existing_archs = sorted(
+                            data.get("supported_architectures") or []
+                        )
+                        if sorted(architectures) != existing_archs:
+                            continue
+                    return filepath
                 except Exception:
                     continue
         return None
@@ -445,8 +456,11 @@ class CimianImporter(Processor):
         version = str(pkgsinfo["version"])
 
         # Check for duplicates
+        archs = pkgsinfo.get("supported_architectures", [])
         if not self.env.get("force_cimian_import"):
-            existing = self._find_existing_pkgsinfo(pkgsinfo_dir, name, version)
+            existing = self._find_existing_pkgsinfo(
+                pkgsinfo_dir, name, version, architectures=archs
+            )
             if not existing:
                 existing = self._find_existing_by_hash(pkgsinfo_dir, installer_hash)
 
@@ -474,7 +488,6 @@ class CimianImporter(Processor):
             pkginfo_dest_dir = pkgsinfo_dir
 
         # Construct filename: Name-version.yaml (or Name-arch-version.yaml)
-        archs = pkgsinfo.get("supported_architectures", [])
         if archs and len(archs) == 1:
             pkgsinfo_filename = f"{name}-{archs[0]}-{version}.yaml"
         else:
