@@ -533,7 +533,7 @@ class CimianImporter(Processor):
                 "name": name,
                 "version": version,
                 "catalogs": ", ".join(pkgsinfo.get("catalogs", [])),
-                "supported_architectures": archs,
+                "supported_architectures": ", ".join(archs),
                 "pkginfo_path": os.path.relpath(pkgsinfo_dest, deployment_dir),
                 "pkg_path": os.path.relpath(pkg_dest, deployment_dir),
             },
