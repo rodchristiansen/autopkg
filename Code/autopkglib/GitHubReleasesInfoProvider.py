@@ -78,8 +78,7 @@ class GitHubReleasesInfoProvider(Processor):
         },
         "CURL_PATH": {
             "required": False,
-            "description": "Path to curl binary. Defaults to /usr/bin/curl.",
-            "default": "/usr/bin/curl",
+            "description": "Path to curl binary. Auto-detected if not set.",
         },
         "GITHUB_URL": {
             "required": False,
