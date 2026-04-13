@@ -199,6 +199,10 @@ class CimianImporter(Processor):
             "required": False,
             "description": "Path to a separate uninstaller executable, if applicable.",
         },
+        "icon_name": {
+            "required": False,
+            "description": "Icon filename for the package (e.g., 'Chrome.png').",
+        },
         "force_cimian_import": {
             "required": False,
             "description": "If True, import even if a matching package already exists in the repo.",
@@ -362,6 +366,7 @@ class CimianImporter(Processor):
         optional_string_fields = [
             "minimum_os_version",
             "maximum_os_version",
+            "icon_name",
             "installcheck_script",
             "uninstallcheck_script",
             "preinstall_script",

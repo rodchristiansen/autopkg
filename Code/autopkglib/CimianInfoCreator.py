@@ -76,6 +76,10 @@ class CimianInfoCreator(Processor):
             "required": False,
             "description": "Package description.",
         },
+        "cimian_info_icon_name": {
+            "required": False,
+            "description": "Icon filename for the package (e.g., 'Chrome.png').",
+        },
     }
     output_variables = {
         "cimian_pkginfo": {
@@ -366,6 +370,8 @@ class CimianInfoCreator(Processor):
             pkgsinfo["description"] = extracted_props["Description"]
         if self.env.get("cimian_info_category"):
             pkgsinfo["category"] = self.env["cimian_info_category"]
+        if self.env.get("cimian_info_icon_name"):
+            pkgsinfo["icon_name"] = self.env["cimian_info_icon_name"]
 
         # Installer-type-specific installs array
         if installer_type == "msi":
