@@ -93,19 +93,62 @@ class CimianInfoCreator(Processor):
     }
 
     def _extract_msi_properties(self, msi_path):
-        """Extract product properties from an MSI file using PowerShell (Windows only)."""
+        """Extract product properties from an MSI file.
+
+        Uses Python's built-in msilib (CPython on Windows) to read the
+        Property table directly, avoiding COM subprocess issues on hosted
+        CI agents.  Falls back to a PowerShell subprocess if msilib is
+        unavailable.
+        """
         if platform.system() != "Windows":
             self.output(
-                "MSI property extraction requires Windows. Skipping.", verbose_level=1
+                "MSI property extraction requires Windows. Skipping.",
+                verbose_level=1,
             )
             return {}
 
+        # Preferred: use msilib (built into CPython on Windows)
+        try:
+            import msilib
+
+            db = msilib.OpenDatabase(msi_path, msilib.MSIDBOPEN_READONLY)
+            view = db.OpenView(
+                "SELECT Property, Value FROM Property "
+                "WHERE Property IN "
+                "('ProductCode','UpgradeCode','ProductName',"
+                "'ProductVersion','Manufacturer')"
+            )
+            view.Execute(None)
+            props = {}
+            while True:
+                try:
+                    row = view.Fetch()
+                except msilib.MSIError:
+                    break
+                if row is None:
+                    break
+                props[row.GetString(1)] = row.GetString(2)
+            view.Close()
+            return props
+        except ImportError:
+            self.output(
+                "msilib unavailable, falling back to PowerShell",
+                verbose_level=2,
+            )
+        except Exception as err:
+            self.output(
+                f"msilib extraction failed ({err}), falling back to PowerShell",
+                verbose_level=1,
+            )
+
+        # Fallback: PowerShell COM object
         ps_script = (
             "$msiPath = '{msi_path}';"
             "$installer = New-Object -ComObject WindowsInstaller.Installer;"
             "$db = $installer.OpenDatabase($msiPath, 0);"
             "$view = $db.OpenView(\"SELECT Property, Value FROM Property "
-            "WHERE Property IN ('ProductCode','UpgradeCode','ProductName','ProductVersion','Manufacturer')\");"
+            "WHERE Property IN ('ProductCode','UpgradeCode','ProductName',"
+            "'ProductVersion','Manufacturer')\");"
             "$view.Execute();"
             "$row = $view.Fetch();"
             "while ($row -ne $null) {{"
@@ -122,7 +165,9 @@ class CimianInfoCreator(Processor):
                 timeout=30,
             )
             if result.returncode != 0:
-                self.output(f"MSI extraction warning: {result.stderr}", verbose_level=1)
+                self.output(
+                    f"MSI extraction warning: {result.stderr}", verbose_level=1
+                )
                 return {}
 
             props = {}
