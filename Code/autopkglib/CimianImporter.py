@@ -487,14 +487,25 @@ class CimianImporter(Processor):
             pkg_dest_dir = pkgs_dir
             pkginfo_dest_dir = pkgsinfo_dir
 
-        # Construct filename: Name-version.yaml (or Name-arch-version.yaml)
+        # Construct filenames: Name-arch-version.ext (or Name-version.ext)
+        pkg_stem, pkg_ext = os.path.splitext(pkg_basename)
         if archs and len(archs) == 1:
-            pkgsinfo_filename = f"{name}-{archs[0]}-{version}.yaml"
+            versioned_stem = f"{name}-{archs[0]}-{version}"
         else:
-            pkgsinfo_filename = f"{name}-{version}.yaml"
+            versioned_stem = f"{name}-{version}"
+        pkgsinfo_filename = f"{versioned_stem}.yaml"
+        pkg_filename = f"{versioned_stem}{pkg_ext}"
 
-        pkg_dest = os.path.join(pkg_dest_dir, pkg_basename)
+        pkg_dest = os.path.join(pkg_dest_dir, pkg_filename)
         pkgsinfo_dest = os.path.join(pkginfo_dest_dir, pkgsinfo_filename)
+
+        # Update installer location in pkgsinfo to use versioned filename
+        if subdirectory:
+            pkgsinfo["installer"]["location"] = (
+                f"\\{subdirectory.replace('/', os.sep)}\\{pkg_filename}"
+            ).replace("/", "\\")
+        else:
+            pkgsinfo["installer"]["location"] = f"\\{pkg_filename}".replace("/", "\\")
 
         # Copy installer to repo
         os.makedirs(pkg_dest_dir, exist_ok=True)
