@@ -186,6 +186,27 @@ class MunkiImporter(Processor):
                     for matchingindex in list(matchingindexes)
                 ]
 
+        # Match by name + version, even when installer hashes differ.
+        # This catches duplicates when the same logical version is rebuilt
+        # with a different installer binary -- common when installers are
+        # re-downloaded from a CDN that varies the payload, or when the
+        # source pkg is rebuilt without a version bump.
+        name = pkginfo.get("name")
+        version = pkginfo.get("version")
+        if name and version:
+            matchingindexes = (
+                pkgdb.get("name_versions", {}).get(name, {}).get(version)
+            )
+            if matchingindexes:
+                self.output(
+                    f"No hash match, but found existing pkginfo for "
+                    f"{name} version {version} by name+version."
+                )
+                return [
+                    pkgdb["items"][matchingindex]
+                    for matchingindex in list(matchingindexes)
+                ]
+
         # try to match against installed applications
         applist = [
             item
