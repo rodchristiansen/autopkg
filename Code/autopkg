@@ -59,7 +59,7 @@ from autopkglib import (
     set_pref,
     version_equal_or_greater,
 )
-from autopkglib.autopkgyaml import autopkg_str_representer
+from autopkglib.autopkgyaml import AutoPkgDumper, autopkg_str_representer
 from autopkglib.github import GitHubSession, print_gh_search_results
 
 # Catch Python 2 wrappers with an early f-string. Message must be on a single line.
@@ -73,13 +73,6 @@ RECIPE_FAILED_CODE = 70
 yaml.add_representer(str, autopkg_str_representer)
 # to use with safe_dump:
 yaml.representer.SafeRepresenter.add_representer(str, autopkg_str_representer)
-
-
-class AutoPkgDumper(yaml.SafeDumper):
-    """Class used for writing yaml files with adjusted indentation."""
-
-    def increase_indent(self, flow=False, indentless=False):
-        return super(AutoPkgDumper, self).increase_indent(flow, False)
 
 
 def print_version(argv) -> None:
