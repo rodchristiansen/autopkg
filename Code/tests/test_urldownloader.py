@@ -19,7 +19,7 @@ import unittest
 from hashlib import md5, sha1, sha256
 from unittest.mock import patch
 
-from autopkglib import BUNDLE_ID
+from autopkglib import BUNDLE_ID, ProcessorError
 from autopkglib.URLDownloader import URLDownloader
 
 
@@ -668,6 +668,123 @@ class TestURLDownloader(unittest.TestCase):
         self.assertFalse(self.processor.xattr_etag.startswith("user."))
         self.assertFalse(self.processor.xattr_last_modified.startswith("user."))
         self.assertTrue(BUNDLE_ID in self.processor.xattr_etag)
+
+
+    # Content-Type validation tests
+
+    def _make_temp_payload(self, name, body=b"junk"):
+        path = os.path.join(self.temp_dir, name)
+        with open(path, "wb") as f:
+            f.write(body)
+        return path
+
+    def test_validate_content_type_rejects_html_for_msi(self):
+        """HTML body saved as .msi (the Blender 5+ failure mode) is rejected."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "Blender-x64.msi")
+        self.processor.env["url"] = "https://example.com/Blender-x64.msi"
+        temp_path = self._make_temp_payload("Blender-x64.msi.tmp", b"<html>404</html>")
+
+        with self.assertRaises(ProcessorError) as ctx:
+            self.processor.validate_content_type(
+                {"content-type": "text/html; charset=utf-8"}, temp_path
+            )
+
+        self.assertIn("text/html", str(ctx.exception))
+        self.assertIn(".msi", str(ctx.exception))
+        # Temp file must be cleaned up so it can't be picked up later.
+        self.assertFalse(os.path.exists(temp_path))
+
+    def test_validate_content_type_rejects_json_for_exe(self):
+        """JSON body saved as .exe is rejected."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "installer.exe")
+        self.processor.env["url"] = "https://example.com/installer.exe"
+        temp_path = self._make_temp_payload("installer.exe.tmp", b'{"error":"gone"}')
+
+        with self.assertRaises(ProcessorError):
+            self.processor.validate_content_type(
+                {"content-type": "application/json"}, temp_path
+            )
+        self.assertFalse(os.path.exists(temp_path))
+
+    def test_validate_content_type_accepts_octet_stream_for_msi(self):
+        """application/octet-stream is the common case for installers and must pass."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "thing.msi")
+        self.processor.env["url"] = "https://example.com/thing.msi"
+        temp_path = self._make_temp_payload("thing.msi.tmp")
+
+        self.processor.validate_content_type(
+            {"content-type": "application/octet-stream"}, temp_path
+        )
+        # Temp file should be untouched on the happy path.
+        self.assertTrue(os.path.exists(temp_path))
+
+    def test_validate_content_type_accepts_zip(self):
+        """application/zip for .zip passes."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "bundle.zip")
+        self.processor.env["url"] = "https://example.com/bundle.zip"
+        temp_path = self._make_temp_payload("bundle.zip.tmp")
+
+        self.processor.validate_content_type(
+            {"content-type": "application/zip"}, temp_path
+        )
+        self.assertTrue(os.path.exists(temp_path))
+
+    def test_validate_content_type_skips_non_installer_extension(self):
+        """Files without an installer extension are not validated."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "release-notes.txt")
+        self.processor.env["url"] = "https://example.com/release-notes.txt"
+        temp_path = self._make_temp_payload("release-notes.txt.tmp")
+
+        # text/html into .txt must not raise -- we only police installer extensions.
+        self.processor.validate_content_type(
+            {"content-type": "text/html"}, temp_path
+        )
+        self.assertTrue(os.path.exists(temp_path))
+
+    def test_validate_content_type_opt_out(self):
+        """Setting validate_content_type=False disables the check."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "weird.msi")
+        self.processor.env["url"] = "https://example.com/weird.msi"
+        self.processor.env["validate_content_type"] = False
+        temp_path = self._make_temp_payload("weird.msi.tmp", b"<html>nope</html>")
+
+        # Would normally raise; opt-out must suppress.
+        self.processor.validate_content_type(
+            {"content-type": "text/html"}, temp_path
+        )
+        self.assertTrue(os.path.exists(temp_path))
+
+    def test_validate_content_type_missing_header_allows(self):
+        """No Content-Type header means we don't second-guess the server."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "thing.msi")
+        self.processor.env["url"] = "https://example.com/thing.msi"
+        temp_path = self._make_temp_payload("thing.msi.tmp")
+
+        self.processor.validate_content_type({}, temp_path)
+        self.assertTrue(os.path.exists(temp_path))
+
+    def test_validate_content_type_unknown_mime_warns_but_allows(self):
+        """An unfamiliar MIME type that's not on the deny list is allowed (with warning)."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "thing.msi")
+        self.processor.env["url"] = "https://example.com/thing.msi"
+        temp_path = self._make_temp_payload("thing.msi.tmp")
+
+        # application/x-something-weird isn't on either list -- should not raise.
+        self.processor.validate_content_type(
+            {"content-type": "application/x-something-weird"}, temp_path
+        )
+        self.assertTrue(os.path.exists(temp_path))
+
+    def test_validate_content_type_case_insensitive(self):
+        """Content-Type matching is case-insensitive."""
+        self.processor.env["pathname"] = os.path.join(self.temp_dir, "thing.MSI")
+        self.processor.env["url"] = "https://example.com/thing.MSI"
+        temp_path = self._make_temp_payload("thing.MSI.tmp", b"<html>x</html>")
+
+        with self.assertRaises(ProcessorError):
+            self.processor.validate_content_type(
+                {"content-type": "TEXT/HTML"}, temp_path
+            )
 
 
 if __name__ == "__main__":
