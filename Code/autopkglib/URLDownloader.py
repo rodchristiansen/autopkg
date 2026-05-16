@@ -26,6 +26,59 @@ from autopkglib.URLGetter import URLGetter
 __all__ = ["URLDownloader"]
 
 
+# MIME types that are valid for each installer extension. Used to flag the
+# common failure where an upstream URL returns an HTML error page that gets
+# saved verbatim as an installer (e.g. a 50 KB text/html "404" written as
+# Foo.msi, then handed to an installer that loops forever trying to run it).
+_INSTALLER_CONTENT_TYPES = {
+    ".msi": {
+        "application/x-msi",
+        "application/x-ms-installer",
+        "application/octet-stream",
+    },
+    ".pkg": {
+        "application/octet-stream",
+        "application/vnd.apple.installer+xml",
+        "application/x-xar",
+    },
+    ".mpkg": {
+        "application/octet-stream",
+        "application/vnd.apple.installer+xml",
+        "application/x-xar",
+    },
+    ".dmg": {
+        "application/octet-stream",
+        "application/x-apple-diskimage",
+    },
+    ".zip": {
+        "application/zip",
+        "application/octet-stream",
+    },
+    ".exe": {
+        "application/octet-stream",
+        "application/x-msdownload",
+        "application/x-dosexec",
+        "application/vnd.microsoft.portable-executable",
+    },
+}
+
+# Content types that are clearly not an installer payload. Hitting one of
+# these while the destination filename claims to be an installer indicates
+# the upstream URL is broken or returned an error page.
+_INSTALLER_DENY_CONTENT_TYPES = {
+    "text/html",
+    "text/plain",
+    "application/json",
+    "application/xml",
+    "text/xml",
+}
+
+# Default for the validate_content_type input variable. Defined as a module
+# constant so the schema default and the runtime fallback in main() cannot
+# drift apart.
+_DEFAULT_VALIDATE_CONTENT_TYPE = True
+
+
 class URLDownloader(URLGetter):
     """Downloads a URL to the specified download_dir using curl."""
 
@@ -92,6 +145,22 @@ class URLDownloader(URLGetter):
                 "If provided, the download is skipped and we just use "
                 "this package or disk image."
             ),
+        },
+        "validate_content_type": {
+            "required": False,
+            "description": (
+                "If True (default), URLDownloader rejects responses whose "
+                "Content-Type is incompatible with the destination filename's "
+                "installer extension (.msi, .pkg, .mpkg, .dmg, .zip, .exe). "
+                "This is a heuristic that guards against the specific failure "
+                "mode where curl's --fail flag does NOT catch the error -- "
+                "i.e. a 2xx response that returns an HTML soft-404 or similar "
+                "page in place of the expected installer body. 4xx/5xx "
+                "responses are already aborted by --fail upstream. Set to "
+                "False on the rare recipe whose server legitimately serves "
+                "an installer as text/plain or similar."
+            ),
+            "default": _DEFAULT_VALIDATE_CONTENT_TYPE,
         },
     }
     output_variables = {
@@ -292,6 +361,74 @@ class URLDownloader(URLGetter):
                 f"Can't move {pathname_temporary} to {self.env['pathname']}"
             )
 
+    def validate_content_type(self, header, pathname_temporary) -> None:
+        """Reject downloads whose Content-Type contradicts the installer extension.
+
+        Raises ProcessorError when the destination filename looks like an
+        installer (.msi/.pkg/.mpkg/.dmg/.zip/.exe) but the response carries a
+        Content-Type that cannot be that installer. The temp file is removed
+        before raising so the caller is not left with an HTML error page on
+        disk masquerading as an installer.
+
+        This is a heuristic, not a guarantee. It only inspects the
+        Content-Type header; 4xx/5xx responses are already aborted earlier
+        by curl's --fail flag. The case this catches is the 2xx soft-404 or
+        wrong-payload response (e.g. a CDN returning an HTML "page not
+        found" with status 200) which would otherwise be saved verbatim.
+        """
+        if not self.env.get(
+            "validate_content_type", _DEFAULT_VALIDATE_CONTENT_TYPE
+        ):
+            return
+
+        _, ext = os.path.splitext(self.env["pathname"])
+        ext = ext.lower()
+        if ext not in _INSTALLER_CONTENT_TYPES:
+            return
+
+        raw = header.get("content-type", "")
+        if not raw:
+            # No Content-Type header at all -- don't second-guess the server.
+            return
+
+        # Strip any "; charset=..." or similar parameter.
+        content_type = raw.split(";", 1)[0].strip().lower()
+        if not content_type:
+            return
+
+        allowed = _INSTALLER_CONTENT_TYPES[ext]
+        if content_type in allowed:
+            return
+
+        if content_type in _INSTALLER_DENY_CONTENT_TYPES:
+            if os.path.exists(pathname_temporary):
+                try:
+                    os.remove(pathname_temporary)
+                except OSError as err:
+                    self.output(
+                        f"WARNING: failed to remove rejected temp file "
+                        f"{pathname_temporary}: {err}. Operator may need "
+                        "to clean it up manually.",
+                        verbose_level=1,
+                    )
+            raise ProcessorError(
+                f"Content-Type {content_type!r} is incompatible with destination "
+                f"extension {ext!r} for URL {self.env.get('url')!r}. The upstream "
+                "URL is almost certainly broken (e.g. returning an HTML error "
+                "page). Pin the recipe to a working URL, or set "
+                "validate_content_type to False if this server legitimately "
+                "serves an installer with this Content-Type."
+            )
+
+        # Unknown but not on the deny list -- log and continue. Better to
+        # surface the surprise than to block on an unfamiliar CDN MIME type.
+        self.output(
+            f"WARNING: Content-Type {content_type!r} is not in the known list "
+            f"for {ext!r}; allowing the download but this may be a misconfigured "
+            "server.",
+            verbose_level=1,
+        )
+
     def store_headers(self, header) -> None:
         """Store last-modified and etag headers in pathname xattr."""
         if header.get("last-modified"):
@@ -338,6 +475,10 @@ class URLDownloader(URLGetter):
             # Discard the temp file
             os.remove(pathname_temporary)
             return
+
+        # Guard against upstream URLs that return an HTML error page that
+        # would otherwise be saved as a broken installer.
+        self.validate_content_type(header, pathname_temporary)
 
         # New resource was downloaded. Move the temporary download file to the pathname
         self.move_temp_file(pathname_temporary)
