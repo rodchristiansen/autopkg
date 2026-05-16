@@ -35,16 +35,15 @@ _INSTALLER_CONTENT_TYPES = {
         "application/x-msi",
         "application/x-ms-installer",
         "application/octet-stream",
-        "application/vnd.ms-cab-compressed",
     },
     ".pkg": {
         "application/octet-stream",
-        "application/x-newton-compatible-pkg",
+        "application/vnd.apple.installer+xml",
         "application/x-xar",
     },
     ".mpkg": {
         "application/octet-stream",
-        "application/x-newton-compatible-pkg",
+        "application/vnd.apple.installer+xml",
         "application/x-xar",
     },
     ".dmg": {
@@ -58,6 +57,7 @@ _INSTALLER_CONTENT_TYPES = {
     ".exe": {
         "application/octet-stream",
         "application/x-msdownload",
+        "application/x-dosexec",
         "application/vnd.microsoft.portable-executable",
     },
 }
@@ -72,6 +72,11 @@ _INSTALLER_DENY_CONTENT_TYPES = {
     "application/xml",
     "text/xml",
 }
+
+# Default for the validate_content_type input variable. Defined as a module
+# constant so the schema default and the runtime fallback in main() cannot
+# drift apart.
+_DEFAULT_VALIDATE_CONTENT_TYPE = True
 
 
 class URLDownloader(URLGetter):
@@ -147,12 +152,15 @@ class URLDownloader(URLGetter):
                 "If True (default), URLDownloader rejects responses whose "
                 "Content-Type is incompatible with the destination filename's "
                 "installer extension (.msi, .pkg, .mpkg, .dmg, .zip, .exe). "
-                "This guards against upstream URLs that quietly return an HTML "
-                "error page that would otherwise be saved as a broken installer. "
-                "Set to False on the rare recipe whose server legitimately serves "
+                "This is a heuristic that guards against the specific failure "
+                "mode where curl's --fail flag does NOT catch the error -- "
+                "i.e. a 2xx response that returns an HTML soft-404 or similar "
+                "page in place of the expected installer body. 4xx/5xx "
+                "responses are already aborted by --fail upstream. Set to "
+                "False on the rare recipe whose server legitimately serves "
                 "an installer as text/plain or similar."
             ),
-            "default": True,
+            "default": _DEFAULT_VALIDATE_CONTENT_TYPE,
         },
     }
     output_variables = {
@@ -361,8 +369,16 @@ class URLDownloader(URLGetter):
         Content-Type that cannot be that installer. The temp file is removed
         before raising so the caller is not left with an HTML error page on
         disk masquerading as an installer.
+
+        This is a heuristic, not a guarantee. It only inspects the
+        Content-Type header; 4xx/5xx responses are already aborted earlier
+        by curl's --fail flag. The case this catches is the 2xx soft-404 or
+        wrong-payload response (e.g. a CDN returning an HTML "page not
+        found" with status 200) which would otherwise be saved verbatim.
         """
-        if not self.env.get("validate_content_type", True):
+        if not self.env.get(
+            "validate_content_type", _DEFAULT_VALIDATE_CONTENT_TYPE
+        ):
             return
 
         _, ext = os.path.splitext(self.env["pathname"])
@@ -388,8 +404,13 @@ class URLDownloader(URLGetter):
             if os.path.exists(pathname_temporary):
                 try:
                     os.remove(pathname_temporary)
-                except OSError:
-                    pass
+                except OSError as err:
+                    self.output(
+                        f"WARNING: failed to remove rejected temp file "
+                        f"{pathname_temporary}: {err}. Operator may need "
+                        "to clean it up manually.",
+                        verbose_level=1,
+                    )
             raise ProcessorError(
                 f"Content-Type {content_type!r} is incompatible with destination "
                 f"extension {ext!r} for URL {self.env.get('url')!r}. The upstream "

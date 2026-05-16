@@ -775,6 +775,58 @@ class TestURLDownloader(unittest.TestCase):
         )
         self.assertTrue(os.path.exists(temp_path))
 
+    def test_main_rejects_html_msi_and_skips_move_and_store(self):
+        """Integration: main() must abort, skip move_temp_file/store_headers, and clean temp."""
+        temp_file = os.path.join(self.temp_dir, "tempfile_main_reject")
+        downloads_dir = os.path.join(self.temp_dir, "downloads")
+        os.makedirs(downloads_dir, exist_ok=True)
+
+        self.processor.env["url"] = "https://example.com/Blender-x64.msi"
+        self.processor.env["filename"] = "Blender-x64.msi"
+
+        if hasattr(self.processor, "store_metadata"):
+            storage_method = "store_metadata"
+        else:
+            storage_method = "store_headers"
+
+        with patch(
+            "autopkglib.URLDownloader.download_with_curl"
+        ) as mock_download, patch(
+            "autopkglib.URLDownloader.parse_headers"
+        ) as mock_parse_headers, patch(
+            "autopkglib.URLDownloader.create_temp_file"
+        ) as mock_create_temp, patch(
+            "autopkglib.URLDownloader.move_temp_file"
+        ) as mock_move, patch(
+            f"autopkglib.URLDownloader.{storage_method}"
+        ) as mock_store:
+
+            mock_create_temp.return_value = temp_file
+            mock_download.return_value = ""
+            mock_parse_headers.return_value = {
+                "http_result_code": "200",
+                "http_result_description": "OK",
+                "content-type": "text/html; charset=utf-8",
+            }
+
+            with open(temp_file, "wb") as f:
+                f.write(b"<html>404 not found</html>")
+
+            with self.assertRaises(ProcessorError) as ctx:
+                self.processor.main()
+
+            self.assertIn("text/html", str(ctx.exception))
+            self.assertIn(".msi", str(ctx.exception))
+            # Wiring guarantees: do NOT move into place, do NOT persist metadata.
+            mock_move.assert_not_called()
+            mock_store.assert_not_called()
+            # Temp file must be cleaned up.
+            self.assertFalse(os.path.exists(temp_file))
+            # Summary must NOT be populated on a rejected download.
+            self.assertNotIn(
+                "url_downloader_summary_result", self.processor.env
+            )
+
     def test_validate_content_type_case_insensitive(self):
         """Content-Type matching is case-insensitive."""
         self.processor.env["pathname"] = os.path.join(self.temp_dir, "thing.MSI")
