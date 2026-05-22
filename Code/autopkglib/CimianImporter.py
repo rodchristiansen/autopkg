@@ -527,6 +527,26 @@ class CimianImporter(Processor):
             shutil.copy2(self.env["uninstaller_path"], uninst_dest)
             self.output(f"Copied uninstaller to: {uninst_dest}")
 
+        # Preserve _metadata from any existing pkgsinfo at the destination
+        # (autopkg-origin stamps like created_by/creation_date, promoter
+        # edit dates, etc.) so a force re-import or recipe regen of an
+        # already-imported version does not strip provenance.
+        if os.path.isfile(pkgsinfo_dest):
+            try:
+                with open(pkgsinfo_dest, "r", encoding="utf-8") as existing_fp:
+                    existing = yaml.safe_load(existing_fp)
+                if isinstance(existing, dict) and "_metadata" in existing:
+                    pkgsinfo["_metadata"] = existing["_metadata"]
+                    self.output(
+                        f"Preserved _metadata from existing {pkgsinfo_dest}",
+                        verbose_level=2,
+                    )
+            except Exception as exc:
+                self.output(
+                    f"Warning: could not read existing _metadata from "
+                    f"{pkgsinfo_dest}: {exc}"
+                )
+
         # Write pkgsinfo YAML
         self._write_pkgsinfo_yaml(pkgsinfo, pkgsinfo_dest)
         self.output(f"Wrote pkgsinfo to: {pkgsinfo_dest}")
