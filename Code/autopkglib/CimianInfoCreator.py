@@ -19,6 +19,8 @@ import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
 
+import yaml
+
 from autopkglib import Processor, ProcessorError
 
 __all__ = ["CimianInfoCreator"]
@@ -80,6 +82,14 @@ class CimianInfoCreator(Processor):
             "required": False,
             "description": "Icon filename for the package (e.g., 'Chrome.png').",
         },
+        "CIMIIMPORT_PATH": {
+            "required": False,
+            "description": (
+                "Path to cimiimport.exe, used to auto-generate the installs "
+                "array (--emit-installs). Defaults to "
+                "C:\\Program Files\\Cimian\\cimiimport.exe."
+            ),
+        },
     }
     output_variables = {
         "cimian_pkginfo": {
@@ -95,6 +105,70 @@ class CimianInfoCreator(Processor):
             "description": "Description of interesting results.",
         },
     }
+
+    def _emit_installs_via_cimiimport(self, pkg_path):
+        """Asks cimiimport for its auto-generated installs array.
+
+        Runs `cimiimport --emit-installs <pkg>` and parses the YAML it prints
+        to stdout. cimiimport owns the canonical generation logic (installer
+        identity entry plus MSI bill-of-materials file checks), so shelling
+        out keeps this processor from reimplementing it. Returns the installs
+        list, or None when cimiimport is unavailable, fails, or emits nothing.
+        """
+        cimiimport = (
+            self.env.get("CIMIIMPORT_PATH")
+            or r"C:\Program Files\Cimian\cimiimport.exe"
+        )
+        if not os.path.isfile(cimiimport):
+            self.output(
+                f"cimiimport not found at {cimiimport}; "
+                "falling back to inline installs extraction",
+                verbose_level=1,
+            )
+            return None
+
+        try:
+            proc = subprocess.run(
+                [cimiimport, "--emit-installs", pkg_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as err:
+            self.output(f"cimiimport --emit-installs failed: {err}", verbose_level=1)
+            return None
+
+        if proc.returncode != 0:
+            self.output(
+                f"cimiimport --emit-installs exited {proc.returncode}: "
+                f"{proc.stderr.strip()}",
+                verbose_level=1,
+            )
+            return None
+
+        try:
+            doc = yaml.safe_load(proc.stdout)
+        except yaml.YAMLError as err:
+            self.output(
+                f"cimiimport --emit-installs output was not valid YAML: {err}",
+                verbose_level=1,
+            )
+            return None
+
+        installs = (doc or {}).get("installs")
+        if not isinstance(installs, list) or not installs:
+            self.output(
+                "cimiimport --emit-installs returned no installs entries",
+                verbose_level=2,
+            )
+            return None
+
+        self.output(
+            f"cimiimport generated {len(installs)} installs entries",
+            verbose_level=1,
+        )
+        return installs
 
     def _extract_msi_properties(self, msi_path):
         """Extract product properties from an MSI file.
@@ -375,13 +449,21 @@ class CimianInfoCreator(Processor):
 
         # Installer-type-specific installs array
         if installer_type == "msi":
-            installs_item = {"type": "msi"}
-            if extracted_props.get("ProductCode"):
-                installs_item["product_code"] = extracted_props["ProductCode"]
-            if extracted_props.get("UpgradeCode"):
-                installs_item["upgrade_code"] = extracted_props["UpgradeCode"]
-            if len(installs_item) > 1:
-                pkgsinfo["installs"] = [installs_item]
+            # cimiimport owns the canonical installs generation (MSI identity
+            # entry plus BOM-derived type:file companion checks). Only fall
+            # back to the bare ProductCode/UpgradeCode entry when cimiimport
+            # is unavailable.
+            installs = self._emit_installs_via_cimiimport(pkg_path)
+            if installs:
+                pkgsinfo["installs"] = installs
+            else:
+                installs_item = {"type": "msi"}
+                if extracted_props.get("ProductCode"):
+                    installs_item["product_code"] = extracted_props["ProductCode"]
+                if extracted_props.get("UpgradeCode"):
+                    installs_item["upgrade_code"] = extracted_props["UpgradeCode"]
+                if len(installs_item) > 1:
+                    pkgsinfo["installs"] = [installs_item]
 
         elif installer_type in ("msix", "appx"):
             identity_name = extracted_props.get("IdentityName", "")
