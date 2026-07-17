@@ -82,6 +82,21 @@ class CimianInfoCreator(Processor):
             "required": False,
             "description": "Icon filename for the package (e.g., 'Chrome.png').",
         },
+        "cimian_info_installs": {
+            "required": False,
+            "description": (
+                "Explicit installs array for the pkgsinfo. When provided, this "
+                "list is used verbatim and the auto-generated installs (cimiimport "
+                "--emit-installs / inline MSI extraction) are skipped entirely. "
+                "Use in recipe overrides when the generated checks are wrong at "
+                "runtime — e.g. wrapper MSIs that never register their ProductCode "
+                "(Firefox), or companion file checks whose on-disk FileVersion "
+                "strings ('10,0,926,27113 @Commit: ...') can never match the MSI "
+                "File-table version. Entries follow the normal pkgsinfo installs "
+                "schema and participate in AutoPkg variable substitution, so "
+                "'%version%' works for version pinning."
+            ),
+        },
         "CIMIIMPORT_PATH": {
             "required": False,
             "description": (
@@ -448,7 +463,20 @@ class CimianInfoCreator(Processor):
             pkgsinfo["icon_name"] = self.env["cimian_info_icon_name"]
 
         # Installer-type-specific installs array
-        if installer_type == "msi":
+        explicit_installs = self.env.get("cimian_info_installs")
+        if explicit_installs:
+            if not isinstance(explicit_installs, list):
+                raise ProcessorError(
+                    "cimian_info_installs must be a list of installs entries, "
+                    f"got {type(explicit_installs).__name__}"
+                )
+            pkgsinfo["installs"] = explicit_installs
+            self.output(
+                f"Using explicit installs array from recipe "
+                f"({len(explicit_installs)} entries); skipping auto-generation",
+                verbose_level=1,
+            )
+        elif installer_type == "msi":
             # cimiimport owns the canonical installs generation (MSI identity
             # entry plus BOM-derived type:file companion checks). Only fall
             # back to the bare ProductCode/UpgradeCode entry when cimiimport
