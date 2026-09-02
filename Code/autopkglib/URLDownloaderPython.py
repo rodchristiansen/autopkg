@@ -335,27 +335,37 @@ class URLDownloaderPython(URLDownloader):
             download_dictionary["file_md5"] = hashes[2].hexdigest()
         download_dictionary["download_url"] = url
         # download_dictionary['http_headers'] = response.info()
-        try:
-            # save http header info to dict
-            download_dictionary["http_headers"] = {}
-            download_dictionary["http_headers"]["Content-Length"] = int(
-                response.headers["content-length"]
-            )
-            download_dictionary["http_headers"]["ETag"] = response.headers["ETag"]
-            download_dictionary["http_headers"]["Last-Modified"] = response.headers[
-                "Last-Modified"
-            ]
-            if download_dictionary["http_headers"]["Content-Length"] != size:
-                # should this be a halting error?
-                self.output("WARNING: file size != content-length header")
-        except (KeyError, TypeError) as err:
-            # probably need to handle a missing header better than this
-            self.output(
-                "ERROR: header issue ({err_type})\n{err}\n".format(
-                    err=err, err_type=type(err).__name__
+        # save http header info to dict. A server using chunked transfer encoding
+        # sends no Content-Length, and some servers omit ETag or Last-Modified;
+        # none of that invalidates the bytes we just read, so record what is
+        # present and carry on rather than discarding a good download.
+        download_dictionary["http_headers"] = {}
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                download_dictionary["http_headers"]["Content-Length"] = int(
+                    content_length
                 )
+            except ValueError:
+                self.output(
+                    "WARNING: unparsable Content-Length header: "
+                    f"{content_length!r}"
+                )
+            else:
+                if download_dictionary["http_headers"]["Content-Length"] != size:
+                    # should this be a halting error?
+                    self.output("WARNING: file size != content-length header")
+        else:
+            self.output(
+                "WARNING: no Content-Length header (chunked transfer encoding?); "
+                "skipping size check"
             )
-            return None
+        for header_name in ("ETag", "Last-Modified"):
+            header_value = response.headers.get(header_name)
+            if header_value is None:
+                self.output(f"WARNING: no {header_name} header")
+            else:
+                download_dictionary["http_headers"][header_name] = header_value
 
         if self.env.get("download_changed", None):
             # Move the new temporary download file to the pathname
