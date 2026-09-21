@@ -132,8 +132,13 @@ class URLDownloaderPython(URLDownloader):
 
         self.output(f"HTTP Headers: \n{header}", 2)
 
-        # get the list of headers to check
-        headers_to_test = self.env.get("HEADERS_TO_TEST", None)
+        # get the list of headers to check, falling back to the declared
+        # default so a caller that never set the variable still compares
+        # something rather than raising on a None list
+        headers_to_test = (
+            self.env.get("HEADERS_TO_TEST")
+            or self.input_variables["HEADERS_TO_TEST"]["default"]
+        )
 
         self.output(
             "headers_to_test: {headers_to_test}".format(
@@ -335,27 +340,26 @@ class URLDownloaderPython(URLDownloader):
             download_dictionary["file_md5"] = hashes[2].hexdigest()
         download_dictionary["download_url"] = url
         # download_dictionary['http_headers'] = response.info()
+        # Record the headers we use for change detection. A chunked response
+        # carries no Content-Length, and some servers omit ETag or
+        # Last-Modified, so each header is optional: a missing one is recorded
+        # as the streamed size (Content-Length) or None, never a reason to
+        # abandon a download that has already been streamed to disk.
+        http_headers = {}
         try:
-            # save http header info to dict
-            download_dictionary["http_headers"] = {}
-            download_dictionary["http_headers"]["Content-Length"] = int(
-                response.headers["content-length"]
-            )
-            download_dictionary["http_headers"]["ETag"] = response.headers["ETag"]
-            download_dictionary["http_headers"]["Last-Modified"] = response.headers[
-                "Last-Modified"
-            ]
-            if download_dictionary["http_headers"]["Content-Length"] != size:
-                # should this be a halting error?
-                self.output("WARNING: file size != content-length header")
-        except (KeyError, TypeError) as err:
-            # probably need to handle a missing header better than this
+            content_length = int(response.headers["content-length"])
+        except (KeyError, TypeError, ValueError):
             self.output(
-                "ERROR: header issue ({err_type})\n{err}\n".format(
-                    err=err, err_type=type(err).__name__
-                )
+                "No usable Content-Length header; using the streamed size.", 1
             )
-            return None
+            content_length = size
+        http_headers["Content-Length"] = content_length
+        http_headers["ETag"] = response.headers.get("ETag")
+        http_headers["Last-Modified"] = response.headers.get("Last-Modified")
+        download_dictionary["http_headers"] = http_headers
+        if content_length != size:
+            # should this be a halting error?
+            self.output("WARNING: file size != content-length header")
 
         if self.env.get("download_changed", None):
             # Move the new temporary download file to the pathname
@@ -415,6 +419,15 @@ class URLDownloaderPython(URLDownloader):
         self.clear_zero_file(pathname_temporary)
 
         if self.env.get("download_changed", None):
+            if download_dictionary is None:
+                # download_and_hash gave up part-way through, so nothing was
+                # moved into place. Report that rather than claiming a download
+                # and leaving the next processor to fail on a missing file.
+                raise ProcessorError(
+                    f"Download of {self.env['url']} did not produce a file at "
+                    f"{self.env['pathname']}."
+                )
+
             # store download info for checking for existing download
             self.store_download_info_json(download_dictionary)
 
