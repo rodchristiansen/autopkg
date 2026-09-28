@@ -180,8 +180,14 @@ class URLGetter(Processor):
                 errors=errors,
             )
         except subprocess.CalledProcessError as e:
-            self.output(f"ERROR: {e.stderr.removeprefix('curl: ')}")
-            raise ProcessorError(e.stderr) from e
+            stderr = (
+                e.stderr.decode("utf-8", errors="replace")
+                if isinstance(e.stderr, bytes)
+                else e.stderr
+            )
+            error = stderr.strip()
+            self.output(f"ERROR: {error.removeprefix('curl: ')}")
+            raise ProcessorError(error) from e
         return result.stdout, result.stderr, result.returncode
 
     def download_with_curl(self, curl_cmd, text=True) -> str:
