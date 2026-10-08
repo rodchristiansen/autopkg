@@ -105,14 +105,33 @@ class MunkiVersionChecker(Processor):
             return pkginfo["name"]
         return self.env["NAME"]
 
+    def _get_architectures(self):
+        """Architectures the recipe's pkginfo is limited to, or an empty set."""
+        pkginfo = self.env.get("pkginfo")
+        if not isinstance(pkginfo, dict):
+            return set()
+        archs = set()
+        for arch in pkginfo.get("supported_architectures") or []:
+            # A recipe's pkginfo can say "%ARCH%"; resolve it from the env
+            arch = str(arch)
+            if arch.startswith("%") and arch.endswith("%"):
+                arch = str(self.env.get(arch.strip("%"), ""))
+            if arch:
+                archs.add(arch)
+        return archs
+
     def _check_version_exists(self, name, version):
         """Check if a pkgsinfo file for this name and version exists
-        in the Munki repo."""
+        in the Munki repo. When the recipe's pkginfo names
+        supported_architectures, only a pkgsinfo for one of those
+        architectures counts, so the arm64 and x86_64 builds of one
+        release do not skip each other."""
         munki_repo = self.env["MUNKI_REPO"]
         repo_subdir = self.env.get("MUNKI_REPO_SUBDIR", "")
         file_ext = self.env.get(
             "MUNKI_PKGINFO_FILE_EXTENSION", "plist"
         ).strip(".")
+        archs = self._get_architectures()
 
         pkgsinfo_dir = os.path.join(munki_repo, "pkgsinfo")
         if repo_subdir:
@@ -122,6 +141,46 @@ class MunkiVersionChecker(Processor):
 
         if not os.path.isdir(search_dir):
             return False
+
+        # Quick check: exact filename match. The filename carries no
+        # architecture, so this shortcut only applies to recipes that
+        # are not limited to particular architectures.
+        if not archs:
+            for ext in [file_ext] + [
+                e for e in ("yaml", "yml", "plist") if e != file_ext
+            ]:
+                candidate = f"{name}-{version}.{ext}"
+                if os.path.exists(os.path.join(search_dir, candidate)):
+                    self.output(f"Found existing pkgsinfo: {candidate}")
+                    return True
+
+        # Scan files with a matching name prefix and parse them to
+        # verify the version field (and architecture, when limited)
+        pattern = os.path.join(search_dir, f"{name}-*")
+        for filepath in glob.glob(pattern):
+            if os.path.basename(filepath).startswith("."):
+                continue
+            try:
+                info = load_munki_file(filepath)
+                if (
+                    isinstance(info, dict)
+                    and info.get("name") == name
+                    and str(info.get("version", "")) == str(version)
+                ):
+                    existing_archs = set(
+                        info.get("supported_architectures") or []
+                    )
+                    if archs and existing_archs and not (archs & existing_archs):
+                        continue
+                    self.output(
+                        f"Found matching version in: "
+                        f"{os.path.basename(filepath)}"
+                    )
+                    return True
+            except Exception:
+                continue
+
+        return False
 
         # Quick check: exact filename match with configured extension
         expected_name = f"{name}-{version}.{file_ext}"
